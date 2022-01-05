@@ -117,12 +117,9 @@ resource "google_compute_instance" "my-vm" {
     }
   }
 
-  lifecycle {
-    create_before_destroy = true
   
-  }
-
-
+  
+  
 
 }
 output "ip" {
