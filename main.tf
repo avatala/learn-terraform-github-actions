@@ -1,56 +1,132 @@
 terraform {
   required_providers {
-    aws = {
-      source  = "hashicorp/aws"
-      version = "3.26.0"
-    }
-    random = {
-      source  = "hashicorp/random"
-      version = "3.0.1"
+    google = {
+      source  = "hashicorp/google"
+    
     }
   }
   required_version = ">= 1.1.0"
 
   cloud {
-    organization = "REPLACE_ME"
+    organization = "terraform-gcp"
 
     workspaces {
-      name = "gh-actions-demo"
+      name = "getting-started-with-terraform"
     }
   }
 }
 
+provider "google" {
+  project     = var.project
+  region      = var.region
+  zone        = "us-central1-a"
 
-provider "aws" {
-  region = "us-west-2"
 }
 
 
 
-resource "random_pet" "sg" {}
+module "vpc" {
+  source  = "terraform-google-modules/network/google"
+  version = "~> 3.0"
 
-resource "aws_instance" "web" {
-  ami                    = "ami-830c94e3"
-  instance_type          = "t2.micro"
-  vpc_security_group_ids = [aws_security_group.web-sg.id]
+  project_id   = var.project
+  network_name = "my-network"
+  routing_mode = "GLOBAL"
 
-  user_data = <<-EOF
-              #!/bin/bash
-              echo "Hello, World" > index.html
-              nohup busybox httpd -f -p 8080 &
-              EOF
-}
+  subnets = [
 
-resource "aws_security_group" "web-sg" {
-  name = "${random_pet.sg.id}-sg"
-  ingress {
-    from_port   = 8080
-    to_port     = 8080
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
+    {
+      subnet_name           = "subnet-01"
+      subnet_ip             = "10.138.20.0/24"
+      subnet_region         = "us-west1"
+      subnet_private_access = "true"
+      subnet_flow_logs      = "true"
+      description           = "us-west1 subnet"
+    },
+    {
+      subnet_name               = "subnet-02"
+      subnet_ip                 = "10.128.30.0/24"
+      subnet_region             = "us-central1"
+      subnet_flow_logs          = "true"
+      subnet_flow_logs_interval = "INTERVAL_10_MIN"
+      subnet_flow_logs_sampling = 0.7
+      subnet_flow_logs_metadata = "INCLUDE_ALL_METADATA"
+    }
+  ]
+
+  secondary_ranges = {
+    subnet-02 = [
+      {
+        range_name    = "subnet-02-secondary-01"
+        ip_cidr_range = "192.168.64.0/24"
+      },
+    ]
+
+    subnet-02 = []
   }
+
+  routes = [
+    {
+      name              = "egress-internet"
+      description       = "route through IGW to access internet"
+      destination_range = "0.0.0.0/0"
+      tags              = "egress-inet"
+      next_hop_internet = "true"
+    },
+
+  ]
+}
+resource "google_compute_firewall" "firewall" {
+  name    = "allow-ssh-icmp-rdp-http"
+  network = module.vpc.network_name
+  allow {
+    protocol = "icmp"
+  }
+  allow {
+    protocol = "tcp"
+    ports    = ["80", "8080", "1000-2000", "22", "3386"]
+  }
+  source_tags   = ["web"]
+  source_ranges = ["0.0.0.0/0"]
+
+
+}
+resource "google_compute_address" "ip-add" {
+  name = "external-ip"
+
 }
 
-output "web-address" {
-  value = "${aws_instance.web.public_dns}:8080"
+resource "google_compute_instance" "my-vm" {
+  name                    = "terrform-vm"
+  machine_type            = "f1-micro"
+  tags                    = ["web","http-server"]
+  zone                    = "us-central1-a"
+  metadata_startup_script = file("startup.sh")
+  boot_disk {
+    initialize_params {
+      image = "debian-cloud/debian-9"
+    }
+  }
+
+  network_interface { 
+    network = module.vpc.network_name 
+    subnetwork = module.vpc.subnets_self_links[0]
+
+    access_config {
+      nat_ip = google_compute_address.ip-add.address
+    }
+  }
+
+  lifecycle {
+    create_before_destroy = true
+  
+  }
+
+
+
+}
+output "ip" {
+
+  value = google_compute_address.ip-add.address
+
 }
